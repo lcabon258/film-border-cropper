@@ -1,0 +1,37 @@
+# Local Python environment and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+# Private projects and generated test workspaces
+Projects/
+Originals/
+Previews/
+Cropped/
+*_test_workspace/
+test_workspace/
+tmp*/
+last_project.json
+server_session.json
+Film_Project*.json
+folder_import_report.json
+# Generated binaries, runtime and distribution packages
+_internal/
+*.exe
+*.dll
+*.pyd
+*.zip
+build/
+dist/
+# Generated results and local logs
+*TEST_RESULTS.json
+launch_error.txt
+CHECKSUMS.json
+*.log
+# Photo inputs and exports (no user photos in Git)
+*.[jJ][pP][gG]
+*.[jJ][pP][eE][gG]
+*.[pP][nN][gG]
+*.[tT][iI][fF]
+*.[tT][iI][fF][fF]
