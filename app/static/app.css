@@ -3,3 +3,5 @@
 .download-button{min-width:155px;white-space:nowrap}.download-button:disabled{background:#e4e6df!important;border-color:#d4d8ce!important;color:#8a9187!important;opacity:1}.export-options{flex-wrap:wrap;justify-content:flex-end}
 
 #projectPath{max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9px}.project-tools{font-size:11px;color:var(--muted);margin:10px 0}.project-tools button{margin-top:8px;font-size:11px}.header-actions{flex-wrap:wrap;justify-content:flex-end}.header-actions #newProject{border-color:#9eb8aa;color:var(--accent)}
+
+.review-actions{flex-wrap:wrap}.batch>div{flex-wrap:wrap}#removeCurrent,#removeSelected{color:var(--danger)}

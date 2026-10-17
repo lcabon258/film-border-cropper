@@ -1,6 +1,6 @@
 # Film Border Cropper
 
-Windows 本機底片翻拍裁切工具。現在基準為 **V1 Preview 3**。
+Windows 本機底片翻拍裁切工具。現在基準為 **V1 Preview 4**。
 
 ## 功能
 
@@ -27,10 +27,11 @@ python app/server.py --workspace Projects/MyFilm
 python test_app.py
 python test_routes.py
 python test_projects.py
+python test_removal.py
 node test_frontend.cjs
 ```
 
-Preview 3 的測試範圍是9項影像／專案、3項路由、8項專案管理與24項前端邏輯檢查。原生Windows新視窗尚待實機確認。這些檢查不是獨立照片辨識準確率。
+Preview 4 的測試範圍是9項影像／專案、3項路由、8項專案管理、8項移除安全檢查與29項前端邏輯檢查。原生Windows新視窗尚待實機確認。這些檢查不是獨立照片辨識準確率。
 
 ## 版本管理
 
@@ -40,3 +41,10 @@ Preview 3 的測試範圍是9項影像／專案、3項路由、8項專案管理�
 - 正式版前仍需獨立辨識率、更多中繼資料與乾淨 Windows 驗收。
 
 目前未決定對外授權條款；不要在未獲擁有者決定前擅自加入開源授權。
+
+
+### 從專案移除照片
+
+單張可按「從專案移除這張」；多張可勾選縮圖，再按「從專案移除選取照片」。確認後從目前專案清單移除並自動保存。匯入、辨識或輸出進行中暫停此操作。
+
+為保留恢復機會，專案內的照片副本、預覽及編輯紀錄移至 `Removed/<時間與識別碼>/`；外部匯入來源與 `Cropped` 既有輸出不變。Removed 不會自動清空，目前尚無介面內還原按鈕。可重新匯入來源照片，但會視為新照片，原有角點與確認狀態不會自動恢復。Removed 內保留 `removed_items.json` 供後續恢復使用。

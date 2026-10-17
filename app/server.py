@@ -64,7 +64,7 @@ class Store:
     def save(self):
         with self.lock:self.state['updated_at']=datetime.now().isoformat(timespec='seconds');atomic_json(self.path,self.state)
     def snapshot(self):
-        with self.lock:return json.loads(json.dumps({'project':self.state,'jobs':list(self.jobs.values()),'queue_size':self.queue.qsize(),'version':'1.0-preview.3','storage':{'project_root':str(self.root),'originals':str(self.root/'Originals'),'previews':str(self.root/'Previews'),'outputs':str(self.root/'Cropped')}}))
+        with self.lock:return json.loads(json.dumps({'project':self.state,'jobs':list(self.jobs.values()),'queue_size':self.queue.qsize(),'version':'1.0-preview.4','storage':{'project_root':str(self.root),'originals':str(self.root/'Originals'),'previews':str(self.root/'Previews'),'outputs':str(self.root/'Cropped')}}))
     def item(self,id):
         for r in self.state['items']:
             if r['id']==id:return r
@@ -90,6 +90,44 @@ class Store:
             h,w=im.shape[:2]
             row={'id':id,'name':name,'relative_name':str(relative)[:400],'source':source.relative_to(self.root).as_posix(),'sha256':digest,'width':w,'height':h,'bit_depth':16 if im.dtype==np.uint16 else 8,'channels':1 if im.ndim==2 else im.shape[2],'exif_orientation_original':meta['orientation_original'],'metadata':{'icc':bool(meta['icc']),'exif':bool(meta['exif']),'dpi':meta['dpi']},'corners':None,'detection':None,'confidence':'pending','score':None,'status':'queued','confirmed':False,'auto_pass':False,'edit_revision':0,'inset':0,'inset_unit':'px','rotation_deg':0,'mode':'perspective','error':None}
             (self.root/'Previews'/(id+'.jpg')).write_bytes(jpeg_bytes(im));self.state['items'].append(row);self.save();self.create_job('detect',[id]);return {'item':row,'duplicate':False}
+    def remove_items(self,ids):
+        if not isinstance(ids,list) or not ids or any(not isinstance(id,str) for id in ids):
+            raise ValueError('請選擇要移除的照片。')
+        ids=list(dict.fromkeys(ids))
+        with self.lock:
+            if any(j['status'] in ['queued','running'] for j in self.jobs.values()):
+                raise ValueError('請等待匯入、辨識或輸出完成後，再移除照片。')
+            rows=[self.item(id) for id in ids]
+            files=[]
+            for row in rows:
+                for folder,name in [('Originals',Path(row['source']).name),('Previews',row['id']+'.jpg')]:
+                    directory=self.root/folder
+                    file=directory/name
+                    if directory.is_symlink() or not directory.resolve().is_relative_to(self.root) or file.is_symlink() or not file.resolve().is_relative_to(directory.resolve()):
+                        raise ValueError('照片路徑不安全，未移除任何照片。')
+                    if folder=='Originals' and file.resolve()!=self.source(row):
+                        raise ValueError('照片路徑無效，未移除任何照片。')
+                    if file.exists():
+                        if not file.is_file():raise ValueError('照片路徑不是檔案。')
+                        files.append((file,Path(folder)/name))
+            recovery=self.root/'Removed'
+            if recovery.is_symlink() or not recovery.resolve().is_relative_to(self.root):
+                raise ValueError('移除備份路徑不安全。')
+            backup=recovery/(datetime.now().strftime('%Y%m%d_%H%M%S')+'_'+secrets.token_hex(6))
+            backup.mkdir(parents=True,exist_ok=False)
+            before=json.loads(json.dumps(self.state));moved=[]
+            try:
+                atomic_json(backup/'removed_items.json',{'project_id':self.state['project_id'],'removed_at':datetime.now().isoformat(),'items':rows})
+                for source,relative in files:
+                    dest=backup/relative;dest.parent.mkdir(parents=True,exist_ok=True)
+                    source.rename(dest);moved.append((source,dest))
+                removed=set(ids);self.state['items']=[r for r in self.state['items'] if r['id'] not in removed]
+                self.save()
+            except Exception:
+                self.state=before
+                for source,dest in reversed(moved):dest.rename(source)
+                raise
+            return {'removed_ids':ids,'count':len(ids),'recovery_folder':str(backup)}
     def patch(self,id,patch):
         allowed={'corners','inset','inset_unit','rotation_deg','mode','confirmed','rejected','reset'}
         if set(patch)-allowed:raise ValueError('不支援的編輯欄位。')
@@ -243,6 +281,8 @@ class Handler(BaseHTTPRequestHandler):
                 finally:self.server.project_lock.release()
             elif parsed.path=='/api/import':
                 name=query.get('name',['photo.jpg'])[0];relative=query.get('relative',[name])[0];self.send(200,self.store.import_file(name,relative,self.read_body()))
+            elif parsed.path=='/api/items/remove':
+                self.send(200,self.store.remove_items(self.json_body().get('ids')))
             elif parsed.path.startswith('/api/item/'):
                 self.send(200,{'item':self.store.patch(parsed.path.split('/')[-1],self.json_body())})
             elif parsed.path=='/api/detect':

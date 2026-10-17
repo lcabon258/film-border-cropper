@@ -1,6 +1,6 @@
 'use strict';
 const $=id=>document.getElementById(id), token=window.FILM_TOKEN;
-let state={project:{items:[],settings:{}},jobs:[]},current=null,selected=new Set(),image=null,imageId=null,zoom=1,pan={x:0,y:0},drag=null,cornerIndex=0,compare=false,importing=false,editing=false,polling=false,lastCropKey='',lastListHTML='',saveChain=Promise.resolve(),reviewBusy=false,refreshInFlight=null,exportPending=false,projectBusy=false;
+let state={project:{items:[],settings:{}},jobs:[]},current=null,selected=new Set(),image=null,imageId=null,zoom=1,pan={x:0,y:0},drag=null,cornerIndex=0,compare=false,importing=false,editing=false,polling=false,lastCropKey='',lastListHTML='',saveChain=Promise.resolve(),reviewBusy=false,refreshInFlight=null,exportPending=false,projectBusy=false,removeBusy=false;
 const labels={high:'高信心',medium:'中信心',low:'低信心',rejected:'需手動處理',pending:'待辨識'};
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const imageUrl=(id,kind='original')=>`/api/image/${id}/${kind}?token=${encodeURIComponent(token)}`;
@@ -16,7 +16,8 @@ async function refresh(force=false){
  try{await work;}finally{if(refreshInFlight===work){refreshInFlight=null;polling=false;}}
 }
 function render(){
- const items=state.project.items;$('projectPath').textContent=state.storage?.project_root||'';$('projectPath').title=state.storage?.project_root||'目前專案保存位置';$('count').textContent=items.length;if(document.activeElement!==$('projectName'))$('projectName').value=state.project.name;
+ const items=state.project.items;const validIds=new Set(items.map(r=>r.id));selected.forEach(id=>{if(!validIds.has(id))selected.delete(id);});if(current&&!validIds.has(current)){current=filtered()[0]?.id||null;imageId=null;image=null;lastCropKey='';}
+ const removeBlocked=removeBusy||projectBusy||importing||reviewBusy||editing||exportPending||state.jobs.some(j=>['queued','running'].includes(j.status));$('removeSelected').disabled=removeBlocked||!selected.size;$('removeCurrent').disabled=removeBlocked||!item();$('projectPath').textContent=state.storage?.project_root||'';$('projectPath').title=state.storage?.project_root||'目前專案保存位置';$('count').textContent=items.length;if(document.activeElement!==$('projectName'))$('projectName').value=state.project.name;
  $('stats').innerHTML=`<div class="stat"><strong>${items.filter(r=>r.confidence==='high').length}</strong><span>高信心</span></div><div class="stat"><strong>${items.filter(needsReview).length}</strong><span>待檢查</span></div><div class="stat"><strong>${items.filter(r=>r.confirmed).length}</strong><span>人工已確認</span></div>`;
  const list=filtered();const nextListHTML=list.length?list.map(r=>`<div class="photo-card ${r.id===current?'active':''}" data-id="${r.id}" role="button" tabindex="0" aria-label="${esc(r.name)}"><input type="checkbox" aria-label="選取 ${esc(r.name)}" data-select="${r.id}" ${selected.has(r.id)?'checked':''}><img src="${imageUrl(r.id)}" alt="" loading="lazy"><div class="photo-text"><strong title="${esc(r.name)}">${esc(r.name)}</strong><span class="badge ${r.confirmed?'confirmed':r.confidence}">${r.confirmed?'✓ 人工已確認':labels[r.confidence]||'處理中'}</span><div class="detail">${r.width} × ${r.height} · ${r.bit_depth}-bit${r.status==='detecting'?' · 辨識中':''}</div></div></div>`).join(''):'<p class="hint" style="padding:15px">沒有符合篩選條件的照片。</p>';if(nextListHTML!==lastListHTML){$('photoList').innerHTML=nextListHTML;lastListHTML=nextListHTML;}
  $('selectedCount').textContent=selected.size?`已選取 ${selected.size} 張`:'未選取照片';$('exportCount').textContent=`${eligible().length} 張可輸出${selected.size?'（選取範圍）':''}`;$('export').disabled=!eligible().length;
@@ -30,7 +31,7 @@ function renderEditor(){
  const list=filtered();$('position').textContent=`${Math.max(0,list.findIndex(x=>x.id===r.id)+1)} / ${list.length}`;
  $('confidence').className=`badge ${r.confidence}`;$('confidence').textContent=labels[r.confidence]||'處理中';$('reviewState').textContent=r.confirmed?'✓ 人工已確認':r.review_decision==='abstention_appropriate'?'✓ 已保留拒絕':r.auto_pass?'通過自動門檻':'等待你確認';
  if(!editing){for(const [id,key]of[['inset','inset'],['insetUnit','inset_unit'],['rotation','rotation_deg']])if(document.activeElement!==$(id))$(id).value=r[key]??0;$('perspective').checked=r.mode==='perspective';}
- $('manualFrame').hidden=!!r.corners;$('reject').disabled=reviewBusy;$('accept').disabled=reviewBusy||!r.corners||['detecting','queued','missing'].includes(r.status);$('reset').disabled=!r.detection;
+ $('manualFrame').hidden=!!r.corners;$('reject').disabled=reviewBusy||removeBusy;$('accept').disabled=reviewBusy||removeBusy||!r.corners||['detecting','queued','missing'].includes(r.status);$('reset').disabled=!r.detection;
  $('accept').textContent=r.confirmed?'✓ 已確認，下一張':'✓ 確認這張邊界　Enter';
  $('imageMessage').textContent=r.status==='missing'?'來源照片遺失或校驗不符，請恢復 Originals 中的原檔。':r.status==='detecting'||r.status==='queued'?'正在分析照片，請稍候…':!r.corners?'這張邊界不夠清楚。可以保留拒絕，或建立手動框。':r.confirmed?'這個邊界已確認。修改角點或參數後，需要重新確認。':r.auto_pass?'候選框通過自動門檻；你仍可調整、人工確認。':'請檢查四邊，避免殘留片邊或裁入畫面。';
  if(imageId!==r.id){imageId=r.id;image=null;zoom=1;pan={x:0,y:0};const im=new Image();const expected=r.id;im.onload=()=>{if(current===expected){image=im;draw();}};im.src=imageUrl(r.id);}
@@ -46,12 +47,25 @@ $('canvas').addEventListener('pointerdown',e=>{const r=item(),v=view();if(!r||!v
 $('canvas').addEventListener('pointermove',e=>{if(!drag)return;const p=point(e),r=item(),v=view();if(drag.type==='pan'){pan={x:drag.pan.x+p.x-drag.p.x,y:drag.pan.y+p.y-drag.p.y};}else{r.corners[cornerIndex]=[Math.max(0,Math.min(r.width-1,(p.x-v.x)/v.scale)),Math.max(0,Math.min(r.height-1,(p.y-v.y)/v.scale))];}draw();});
 async function finishDrag(){if(!drag)return;const type=drag.type;drag=null;if(type==='corner'){const q=item().corners.map(p=>[...p]);editing=false;await saveEdit({corners:q});}}
 $('canvas').addEventListener('pointerup',finishDrag);$('canvas').addEventListener('pointercancel',finishDrag);$('canvas').addEventListener('wheel',e=>{e.preventDefault();zoom=Math.max(.5,Math.min(8,zoom*(e.deltaY<0?1.12:1/1.12)));draw();},{passive:false});
-async function saveEdit(patch){if(projectBusy){notify('請先完成專案選擇。');return false;}const id=current;$('saveStatus').textContent='保存中…';saveChain=saveChain.then(async()=>{try{await api('/api/item/'+id,patch);$('saveStatus').textContent='已自動保存';lastCropKey='';await refresh(true);return true;}catch(e){notify(e.message);$('saveStatus').textContent='未保存，請檢查';await refresh(true);return false;}});return await saveChain;}
+async function saveEdit(patch){if(projectBusy||removeBusy){notify('請先完成專案選擇。');return false;}const id=current;$('saveStatus').textContent='保存中…';saveChain=saveChain.then(async()=>{try{await api('/api/item/'+id,patch);$('saveStatus').textContent='已自動保存';lastCropKey='';await refresh(true);return true;}catch(e){notify(e.message);$('saveStatus').textContent='未保存，請檢查';await refresh(true);return false;}});return await saveChain;}
 function navigate(step){const list=filtered();if(!list.length)return;const index=list.findIndex(r=>r.id===current);selectPhoto(list[(index+step+list.length)%list.length].id);}
 function selectPhoto(id){if(editing)return;current=id;lastCropKey='';render();}
 $('photoList').addEventListener('click',e=>{const checkbox=e.target.closest('[data-select]');if(checkbox){checkbox.checked?selected.add(checkbox.dataset.select):selected.delete(checkbox.dataset.select);render();return;}const card=e.target.closest('[data-id]');if(card)selectPhoto(card.dataset.id);});
 $('photoList').addEventListener('keydown',e=>{if(e.key==='Enter'){const card=e.target.closest('[data-id]');if(card)selectPhoto(card.dataset.id);}});
 $('filter').onchange=()=>{const list=filtered();if(!list.some(r=>r.id===current)&&list.length)current=list[0].id;render();};$('selectAll').onclick=()=>{const list=filtered();const all=list.length&&list.every(r=>selected.has(r.id));list.forEach(r=>all?selected.delete(r.id):selected.add(r.id));render();};
+async function removePhotos(ids){
+ if(removeBusy||projectBusy||importing||reviewBusy||editing||exportPending||state.jobs.some(j=>['queued','running'].includes(j.status))){notify('請等待匯入、辨識、編輯或輸出完成後，再移除照片。');return;}
+ ids=[...new Set(ids)].filter(id=>state.project.items.some(r=>r.id===id));if(!ids.length)return;
+ if(!window.confirm(`從專案移除 ${ids.length} 張照片？\n照片副本、預覽和編輯紀錄會移至專案內的 Removed 備份資料夾。\n匯入來源與已輸出的檔案不受影響。`))return;
+ removeBusy=true;render();
+ try{
+  await saveChain;await api('/api/items/remove',{ids});
+  ids.forEach(id=>selected.delete(id));if(ids.includes(current)){current=null;imageId=null;image=null;lastCropKey='';const previous=$('cropImage').dataset.blob;if(previous)URL.revokeObjectURL(previous);delete $('cropImage').dataset.blob;$('cropImage').hidden=true;}
+  await refresh(true);notify(`已從專案移除 ${ids.length} 張。備份保留在專案的 Removed 資料夾。`);
+ }catch(e){notify(e.message);await refresh(true);}finally{removeBusy=false;render();}
+}
+$('removeSelected').onclick=()=>removePhotos([...selected]);
+$('removeCurrent').onclick=()=>removePhotos(current?[current]:[]);
 $('prevPhoto').onclick=()=>navigate(-1);$('nextPhoto').onclick=()=>navigate(1);
 for(const [id,key]of[['inset','inset'],['rotation','rotation_deg']])$(id).onchange=()=>saveEdit({[key]:Number($(id).value)});
 $('insetUnit').onchange=()=>saveEdit({inset_unit:$('insetUnit').value});$('perspective').onchange=()=>saveEdit({mode:$('perspective').checked?'perspective':'rotate'});
@@ -65,7 +79,7 @@ function advanceReviewed(id,before,message){
  current=null;imageId=null;render();notify(message+' 目前篩選已全部處理。');
 }
 async function reviewAndAdvance(patch,message){
- if(reviewBusy||!item())return;const id=current,before=filtered().map(r=>r.id);reviewBusy=true;renderEditor();
+ if(reviewBusy||removeBusy||!item())return;const id=current,before=filtered().map(r=>r.id);reviewBusy=true;renderEditor();
  try{if(await saveEdit(patch))advanceReviewed(id,before,message);}finally{reviewBusy=false;renderEditor();}
 }
 $('reject').onclick=()=>reviewAndAdvance({rejected:true},'已保留拒絕，不會輸出這張。');
@@ -77,11 +91,11 @@ function setCompare(){compare=!compare;$('compare').setAttribute('aria-pressed',
 $('compare').onclick=setCompare;
 async function loadCrop(){const r=item();if(!r||!compare)return;if(!r.corners){$('cropImage').hidden=true;$('cropMessage').textContent='先建立裁切框，再查看預覽。';return;}const key=r.id+JSON.stringify([r.corners,r.inset,r.inset_unit,r.rotation_deg,r.mode]);if(lastCropKey===key)return;lastCropKey=key;$('cropMessage').textContent='正在產生預覽…';const id=r.id;try{const response=await fetch(imageUrl(id,'crop')+'&rev='+Date.now());if(!response.ok){const message=await response.json();throw Error(message.error);}const blob=await response.blob();if(current!==id||lastCropKey!==key)return;const previous=$('cropImage').dataset.blob;const url=URL.createObjectURL(blob);$('cropImage').src=url;$('cropImage').dataset.blob=url;$('cropImage').hidden=false;$('cropMessage').textContent='';if(previous)URL.revokeObjectURL(previous);}catch(e){$('cropMessage').textContent=e.message;$('cropImage').hidden=true;}}
 new ResizeObserver(()=>requestAnimationFrame(draw)).observe($('canvasWrap'));
-async function importFiles(files){if(importing||projectBusy){notify('請先完成目前匯入或專案選擇。');return;}const photos=Array.from(files).filter(f=>/\.(jpe?g|png|tiff?)$/i.test(f.name));if(!photos.length){notify('沒有找到支援的照片。');return;}importing=true;let errors=[],duplicates=0;for(let i=0;i<photos.length;i++){const file=photos[i];$('importProgress').textContent=`匯入 ${i+1} / ${photos.length} · ${file.name}`;try{const r=await api('/api/import?name='+encodeURIComponent(file.name)+'&relative='+encodeURIComponent(file.webkitRelativePath||file.name),file,true);if(r.duplicate)duplicates++;if(!current)current=r.item.id;}catch(e){errors.push(file.name+'：'+e.message);}await refresh(true);}importing=false;$('importProgress').textContent=`匯入完成${duplicates?' · '+duplicates+' 張重複照片已略過':''}${errors.length?' · '+errors.length+' 張失敗':''}`;if(errors.length)notify(errors.join('；'));else notify('照片已匯入，辨識在背景繼續。');$('files').value='';$('folder').value='';}
+async function importFiles(files){if(importing||projectBusy||removeBusy){notify('請先完成目前匯入或專案選擇。');return;}const photos=Array.from(files).filter(f=>/\.(jpe?g|png|tiff?)$/i.test(f.name));if(!photos.length){notify('沒有找到支援的照片。');return;}importing=true;let errors=[],duplicates=0;for(let i=0;i<photos.length;i++){const file=photos[i];$('importProgress').textContent=`匯入 ${i+1} / ${photos.length} · ${file.name}`;try{const r=await api('/api/import?name='+encodeURIComponent(file.name)+'&relative='+encodeURIComponent(file.webkitRelativePath||file.name),file,true);if(r.duplicate)duplicates++;if(!current)current=r.item.id;}catch(e){errors.push(file.name+'：'+e.message);}await refresh(true);}importing=false;$('importProgress').textContent=`匯入完成${duplicates?' · '+duplicates+' 張重複照片已略過':''}${errors.length?' · '+errors.length+' 張失敗':''}`;if(errors.length)notify(errors.join('；'));else notify('照片已匯入，辨識在背景繼續。');$('files').value='';$('folder').value='';}
 $('addFiles').onclick=$('emptyImport').onclick=()=>$('files').click();$('addFolder').onclick=()=>$('folder').click();$('files').onchange=e=>importFiles(e.target.files);$('folder').onchange=e=>importFiles(e.target.files);
 document.addEventListener('dragover',e=>e.preventDefault());document.addEventListener('drop',e=>{e.preventDefault();if(e.dataTransfer.files.length)importFiles(e.dataTransfer.files);});
 async function projectAction(kind){
- if(projectBusy||importing||reviewBusy||exportPending){notify('請等待目前操作完成。');return;}
+ if(projectBusy||importing||reviewBusy||exportPending||removeBusy){notify('請等待目前操作完成。');return;}
  if(state.jobs.some(j=>['queued','running'].includes(j.status))){notify('請等待匯入、辨識或輸出完成後，再切換專案。');return;}
  await saveChain;projectBusy=true;$('openProject').disabled=true;$('newProject').disabled=true;
  try{
