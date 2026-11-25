@@ -14,9 +14,17 @@ def load_source(path):
     with Image.open(path) as p:
         if getattr(p,'n_frames',1)!=1: raise ValueError('暫不支援多頁 TIFF，請先拆成單張。')
         ex=p.getexif(); orientation=int(ex.get(274,1)); dpi=p.info.get('dpi')
+        # Pillow can expose EXIF resolution as IFDRational, including for JPEG scans.
+        # Project JSON requires native numbers.
+        try:
+            dpi = [float(dpi[0]), float(dpi[1])]
+            if not all(math.isfinite(value) and value > 0 for value in dpi):
+                dpi = None
+        except (IndexError, TypeError, ValueError, ZeroDivisionError):
+            dpi = None
         try: exif=ex.tobytes() if ex else b''
         except Exception: exif=b''
-        meta={'exif':exif,'icc':p.info.get('icc_profile',b''),'dpi':list(dpi) if dpi and all(math.isfinite(float(x)) and float(x)>0 for x in dpi[:2]) else None,
+        meta={'exif':exif,'icc':p.info.get('icc_profile',b''),'dpi':dpi,
               'xmp':p.info.get('xmp') or p.info.get('XML:com.adobe.xmp') or (p.tag_v2.get(700,b'') if hasattr(p,'tag_v2') else b''),'orientation_original':orientation,'source_format':p.format}
     im=cv2.imdecode(np.fromfile(str(path),np.uint8),cv2.IMREAD_UNCHANGED)
     if im is None: raise ValueError('無法讀取這個影像格式。')

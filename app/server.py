@@ -65,7 +65,7 @@ class Store:
     def save(self):
         with self.lock:self.state['updated_at']=datetime.now().isoformat(timespec='seconds');atomic_json(self.path,self.state)
     def snapshot(self):
-        with self.lock:return json.loads(json.dumps({'project':self.state,'jobs':list(self.jobs.values()),'queue_size':self.queue.qsize(),'version':'1.0-preview.5','storage':{'project_root':str(self.root),'originals':str(self.root/'Originals'),'previews':str(self.root/'Previews'),'outputs':str(self.root/'Cropped')}}))
+        with self.lock:return json.loads(json.dumps({'project':self.state,'jobs':list(self.jobs.values()),'queue_size':self.queue.qsize(),'version':'1.0-preview.5.1','storage':{'project_root':str(self.root),'originals':str(self.root/'Originals'),'previews':str(self.root/'Previews'),'outputs':str(self.root/'Cropped')}}))
     def item(self,id):
         for r in self.state['items']:
             if r['id']==id:return r

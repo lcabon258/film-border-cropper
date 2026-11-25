@@ -1,6 +1,7 @@
 """Regression checks for half-frame detection and its project lifecycle."""
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import sys
@@ -14,6 +15,8 @@ if importlib.util.find_spec('cv2') is None:
     sys.path.insert(0, str(ROOT.parents[1]/'work/python_packages'))
 import cv2
 import numpy as np
+from PIL import Image
+from PIL.TiffImagePlugin import IFDRational
 
 from half_frame import detect_half_frames
 from server import Store
@@ -32,6 +35,24 @@ def scan(right_visible=True):
 
 
 class HalfFrameTests(unittest.TestCase):
+    def test_jpeg_exif_dpi_keeps_project_serializable(self):
+        image, _ = scan()
+        exif = Image.Exif()
+        exif[282] = exif[283] = IFDRational(901, 3)
+        exif[296] = 2
+        buffer = io.BytesIO()
+        Image.fromarray((image >> 8).astype(np.uint8)).save(buffer, format='JPEG', exif=exif)
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+            store = Store(Path(temp))
+            try:
+                store.import_file('exif.jpg', 'exif.jpg', buffer.getvalue(), layout='half-lr')
+                data = json.loads(store.path.read_bytes())
+                self.assertEqual(len(data['items']), 2)
+                self.assertAlmostEqual(data['items'][0]['metadata']['dpi'][0], 901 / 3)
+            finally:
+                store.queue.put(None)
+                store.worker.join(timeout=5)
+
     def test_two_frames_in_both_layouts_at_original_coordinates(self):
         image, expected = scan()
         for layout, source, target in [

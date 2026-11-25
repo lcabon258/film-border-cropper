@@ -1,6 +1,6 @@
 # Film Border Cropper
 
-Windows 本機底片翻拍裁切工具。現在基準為 **V1 Preview 5**。
+Windows 本機底片翻拍裁切工具。現在基準為 **V1 Preview 5.1**。
 
 ## 功能
 
