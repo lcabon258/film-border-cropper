@@ -30,7 +30,7 @@ def scan_photos(source,supported):
                 if len(photos)>10000:raise ValueError('單次建立專案最多匯入 10000 張照片，請分批整理。')
     return photos
 
-def start_folder_import(store,source,photos,max_upload,atomic_json):
+def start_folder_import(store,source,photos,max_upload,atomic_json,layout='full'):
     with store.lock:
         job={'id':secrets.token_hex(6),'kind':'import','status':'running','done':0,'total':len(photos),'errors':[],'outputs':[],'duplicates':0}
         store.jobs[job['id']]=job
@@ -38,7 +38,7 @@ def start_folder_import(store,source,photos,max_upload,atomic_json):
         for path in photos:
             try:
                 if path.stat().st_size>max_upload:raise ValueError('單檔大小超過 512 MB。')
-                r=store.import_file(path.name,path.relative_to(source).as_posix(),path.read_bytes())
+                r=store.import_file(path.name,path.relative_to(source).as_posix(),path.read_bytes(),layout=layout)
                 with store.lock:
                     job['outputs'].append({'id':r['item']['id'],'name':path.name,'duplicate':r['duplicate']})
                     if r['duplicate']:job['duplicates']+=1
@@ -60,7 +60,7 @@ def owned_session_remove(root,token):
         if data.get('pid')==os.getpid() and data.get('url','').endswith('token='+token):path.unlink(missing_ok=True)
     except (OSError,ValueError):pass
 
-def change_project(server,kind,store_class,app_root,supported,max_upload,atomic_json,picker=native_pick):
+def change_project(server,kind,store_class,app_root,supported,max_upload,atomic_json,picker=native_pick,layout='full'):
     # The picker is native: arbitrary paths supplied by web requests are ignored.
     current=server.store
     with current.lock:
@@ -98,5 +98,5 @@ def change_project(server,kind,store_class,app_root,supported,max_upload,atomic_
         try:atomic_json(Path(app_root)/'last_project.json',{'workspace':str(new.root)})
         except OSError:pass
         old.queue.put(None)
-        job=start_folder_import(new,source,photos,max_upload,atomic_json) if kind=='new' else None
+        job=start_folder_import(new,source,photos,max_upload,atomic_json,layout=layout) if kind=='new' else None
     return {'cancelled':False,'project_name':new.state['name'],'workspace':str(new.root),'import_job':job.copy() if job else None}

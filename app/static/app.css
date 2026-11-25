@@ -5,3 +5,5 @@
 #projectPath{max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9px}.project-tools{font-size:11px;color:var(--muted);margin:10px 0}.project-tools button{margin-top:8px;font-size:11px}.header-actions{flex-wrap:wrap;justify-content:flex-end}.header-actions #newProject{border-color:#9eb8aa;color:var(--accent)}
 
 .review-actions{flex-wrap:wrap}.batch>div{flex-wrap:wrap}#removeCurrent,#removeSelected{color:var(--danger)}
+
+.import-layout{display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:12px}.import-layout select{flex:1;min-width:0;font-size:12px}

@@ -7,6 +7,7 @@ from datetime import datetime
 import cv2,numpy as np
 from image_ops import SUPPORTED,load_source,jpeg_bytes,crop_item,encode_output,validate_quad,effective_quad
 from film_border_core import detect
+from half_frame import detect_half_frames, LAYOUTS
 from project_manager import change_project,owned_session_remove
 
 APP=Path(__file__).resolve().parent
@@ -64,7 +65,7 @@ class Store:
     def save(self):
         with self.lock:self.state['updated_at']=datetime.now().isoformat(timespec='seconds');atomic_json(self.path,self.state)
     def snapshot(self):
-        with self.lock:return json.loads(json.dumps({'project':self.state,'jobs':list(self.jobs.values()),'queue_size':self.queue.qsize(),'version':'1.0-preview.4','storage':{'project_root':str(self.root),'originals':str(self.root/'Originals'),'previews':str(self.root/'Previews'),'outputs':str(self.root/'Cropped')}}))
+        with self.lock:return json.loads(json.dumps({'project':self.state,'jobs':list(self.jobs.values()),'queue_size':self.queue.qsize(),'version':'1.0-preview.5','storage':{'project_root':str(self.root),'originals':str(self.root/'Originals'),'previews':str(self.root/'Previews'),'outputs':str(self.root/'Cropped')}}))
     def item(self,id):
         for r in self.state['items']:
             if r['id']==id:return r
@@ -74,22 +75,71 @@ class Store:
             for id in ids:self.item(id)
             job={'id':secrets.token_hex(6),'kind':kind,'status':'queued','done':0,'total':len(ids),'errors':[],'outputs':[]}
             self.jobs[job['id']]=job;self.queue.put((job['id'],list(ids),settings or {}));return job.copy()
-    def import_file(self,name,relative,raw):
+    def import_file(self,name,relative,raw,layout='full'):
+        if layout not in LAYOUTS:
+            raise ValueError('匯入排列無效。')
         name=safe_name(name)
         if Path(name).suffix.lower() not in SUPPORTED:raise ValueError('只接受 JPEG、PNG、TIFF。')
         digest=hashlib.sha256(raw).hexdigest()
         with self.lock:
-            for r in self.state['items']:
-                if r['sha256']==digest:return {'item':r,'duplicate':True}
-            id=secrets.token_hex(8);source=self.root/'Originals'/(id+'_'+name)
-            with source.open('xb') as f:f.write(raw)
-            try:im,meta=load_source(source)
-            except Exception as e:
-                source.unlink(missing_ok=True)
-                raise ValueError('影像無法讀取：'+name) from e
-            h,w=im.shape[:2]
-            row={'id':id,'name':name,'relative_name':str(relative)[:400],'source':source.relative_to(self.root).as_posix(),'sha256':digest,'width':w,'height':h,'bit_depth':16 if im.dtype==np.uint16 else 8,'channels':1 if im.ndim==2 else im.shape[2],'exif_orientation_original':meta['orientation_original'],'metadata':{'icc':bool(meta['icc']),'exif':bool(meta['exif']),'dpi':meta['dpi']},'corners':None,'detection':None,'confidence':'pending','score':None,'status':'queued','confirmed':False,'auto_pass':False,'edit_revision':0,'inset':0,'inset_unit':'px','rotation_deg':0,'mode':'perspective','error':None}
-            (self.root/'Previews'/(id+'.jpg')).write_bytes(jpeg_bytes(im));self.state['items'].append(row);self.save();self.create_job('detect',[id]);return {'item':row,'duplicate':False}
+            existing = {row.get('frame', ''): row for row in self.state['items']
+                        if row['sha256'] == digest and row.get('layout', 'full') == layout}
+            frames = [frame for frame in LAYOUTS[layout] if frame not in existing]
+            if not frames:
+                rows = [existing[frame] for frame in LAYOUTS[layout]]
+                return {'item': rows[0], 'items': rows, 'duplicate': True}
+            if len(self.state['items']) + len(frames) > 10000:
+                raise ValueError('專案最多可存放 10000 格照片。')
+
+            # A and B reference one full-resolution source and have independent review records.
+            ids = [secrets.token_hex(8) for _ in frames]
+            reuse = next(iter(existing.values()), None)
+            source = self.source(reuse) if reuse else self.root/'Originals'/(ids[0]+'_'+name)
+            created = []
+            before = self.state['items']
+            try:
+                if reuse:
+                    if not source.is_file() or hashlib.sha256(source.read_bytes()).hexdigest() != digest:
+                        raise ValueError('專案內的半格來源已變更，請先檢查來源檔案。')
+                    name, relative = reuse['original_name'], reuse['relative_name']
+                else:
+                    with source.open('xb') as file:
+                        created.append(source)
+                        file.write(raw)
+                try:
+                    im, meta = load_source(source)
+                except Exception as error:
+                    raise ValueError('影像無法讀取：'+name) from error
+                h, w = im.shape[:2]
+                preview = jpeg_bytes(im)
+                rows = []
+                for id, frame in zip(ids, frames):
+                    label = name if not frame else f'{Path(name).stem[:165]}_{frame}{Path(name).suffix}'
+                    row = {'id': id, 'name': label, 'relative_name': str(relative)[:400],
+                           'source': source.relative_to(self.root).as_posix(), 'sha256': digest,
+                           'width': w, 'height': h, 'bit_depth': 16 if im.dtype == np.uint16 else 8,
+                           'channels': 1 if im.ndim == 2 else im.shape[2],
+                           'exif_orientation_original': meta['orientation_original'],
+                           'metadata': {'icc': bool(meta['icc']), 'exif': bool(meta['exif']), 'dpi': meta['dpi']},
+                           'corners': None, 'detection': None, 'confidence': 'pending', 'score': None,
+                           'status': 'queued', 'confirmed': False, 'auto_pass': False, 'edit_revision': 0,
+                           'inset': 0, 'inset_unit': 'px', 'rotation_deg': 0, 'mode': 'perspective', 'error': None}
+                    if frame:
+                        row.update(layout=layout, frame=frame, original_name=name)
+                    target = self.root/'Previews'/(id+'.jpg')
+                    with target.open('xb') as file:
+                        created.append(target)
+                        file.write(preview)
+                    rows.append(row)
+                self.state['items'] = before + rows
+                self.save()
+            except Exception:
+                self.state['items'] = before
+                for target in reversed(created):
+                    target.unlink(missing_ok=True)
+                raise
+            self.create_job('detect', ids)
+            return {'item': rows[0], 'items': rows, 'duplicate': False}
     def remove_items(self,ids):
         if not isinstance(ids,list) or not ids or any(not isinstance(id,str) for id in ids):
             raise ValueError('請選擇要移除的照片。')
@@ -98,7 +148,9 @@ class Store:
             if any(j['status'] in ['queued','running'] for j in self.jobs.values()):
                 raise ValueError('請等待匯入、辨識或輸出完成後，再移除照片。')
             rows=[self.item(id) for id in ids]
-            files=[]
+            removed=set(ids)
+            retained_sources={self.source(row) for row in self.state['items'] if row['id'] not in removed}
+            files={}
             for row in rows:
                 for folder,name in [('Originals',Path(row['source']).name),('Previews',row['id']+'.jpg')]:
                     directory=self.root/folder
@@ -107,9 +159,11 @@ class Store:
                         raise ValueError('照片路徑不安全，未移除任何照片。')
                     if folder=='Originals' and file.resolve()!=self.source(row):
                         raise ValueError('照片路徑無效，未移除任何照片。')
+                    if folder=='Originals' and file.resolve() in retained_sources:
+                        continue
                     if file.exists():
                         if not file.is_file():raise ValueError('照片路徑不是檔案。')
-                        files.append((file,Path(folder)/name))
+                        files[file]=Path(folder)/name
             recovery=self.root/'Removed'
             if recovery.is_symlink() or not recovery.resolve().is_relative_to(self.root):
                 raise ValueError('移除備份路徑不安全。')
@@ -118,10 +172,10 @@ class Store:
             before=json.loads(json.dumps(self.state));moved=[]
             try:
                 atomic_json(backup/'removed_items.json',{'project_id':self.state['project_id'],'removed_at':datetime.now().isoformat(),'items':rows})
-                for source,relative in files:
+                for source,relative in files.items():
                     dest=backup/relative;dest.parent.mkdir(parents=True,exist_ok=True)
                     source.rename(dest);moved.append((source,dest))
-                removed=set(ids);self.state['items']=[r for r in self.state['items'] if r['id'] not in removed]
+                self.state['items']=[r for r in self.state['items'] if r['id'] not in removed]
                 self.save()
             except Exception:
                 self.state=before
@@ -151,6 +205,8 @@ class Store:
             task=self.queue.get()
             if task is None:return
             jid,ids,settings=task
+            half_cache_key = None
+            half_cache_results = None
             with self.lock:job=self.jobs[jid];job['status']='running'
             for id in ids:
                 try:
@@ -159,9 +215,21 @@ class Store:
                     if not source.is_file():raise ValueError('來源照片遺失。')
                     if job['kind']=='detect':
                         with self.lock:self.item(id)['status']='detecting'
-                        im,meta=load_source(source)
-                        try:d=detect(im,inset_px=0);error=None
-                        except Exception as e:d=None;error=str(e)
+                        try:
+                            if item.get('frame'):
+                                key = (source, item['layout'])
+                                if key != half_cache_key:
+                                    im,meta = load_source(source)
+                                    half_cache_results = detect_half_frames(im, item['layout'])
+                                    half_cache_key = key
+                                d, error = half_cache_results[LAYOUTS[item['layout']].index(item['frame'])]
+                            else:
+                                im,meta=load_source(source)
+                                d=detect(im,inset_px=0)
+                                error=None
+                        except Exception as e:
+                            d=None
+                            error=str(e)
                         with self.lock:
                             r=self.item(id);r['detection']=d
                             if r.get('edit_revision',0)==revision:
@@ -178,6 +246,8 @@ class Store:
                         destdir=self.root/'Cropped'/jid;destdir.mkdir(parents=True,exist_ok=True);dest=destdir/(safe_name(Path(item['name']).stem)+'_'+id[:6]+ext)
                         with dest.open('xb') as f:f.write(encoded)
                         sidecar={'schema_version':1,'source':item['source'],'sha256':item['sha256'],'item_id':id,'corners':item['corners'],'effective_corners':effective_quad(item).tolist(),'inset':item['inset'],'inset_unit':item['inset_unit'],'rotation_deg':item['rotation_deg'],'mode':item['mode'],'human_confirmed':item['confirmed'],'settings':settings,'output_shape':list(cropped.shape),'output_dtype':output_dtype,'source_dtype':str(im.dtype),'warnings':warnings,'core_sha256':CORE_SHA}
+                        if item.get('frame'):
+                            sidecar.update(frame=item['frame'],layout=item['layout'],detector=(item.get('detection') or {}).get('core_version'))
                         atomic_json(dest.with_suffix(ext+'.json'),sidecar)
                         with self.lock:job['outputs'].append({'id':id,'name':dest.name,'width':cropped.shape[1],'height':cropped.shape[0],'dtype':output_dtype,'warnings':warnings})
                 except Exception as e:
@@ -271,16 +341,20 @@ class Handler(BaseHTTPRequestHandler):
             expected=self.headers.get('X-Film-Project')
             if expected and expected!=self.store.state['project_id']:raise ValueError('專案已切換，請重新整理此頁後再操作。')
             if parsed.path in ['/api/project/open','/api/project/new-from-folder']:
-                self.json_body()
+                body=self.json_body()
                 if not hasattr(self.server,'project_lock'):self.server.project_lock=threading.Lock()
                 if not self.server.project_lock.acquire(blocking=False):raise ValueError('另一個專案選擇視窗正在開啟，請先完成。')
                 try:
                     kind='open' if parsed.path.endswith('/open') else 'new'
-                    result=change_project(self.server,kind,Store,APP.parent,SUPPORTED,MAX_UPLOAD,atomic_json)
+                    layout=body.get('layout','full') if kind=='new' else 'full'
+                    if layout not in LAYOUTS:raise ValueError('匯入排列無效。')
+                    result=change_project(self.server,kind,Store,APP.parent,SUPPORTED,MAX_UPLOAD,atomic_json,layout=layout)
                     self.send(200,result)
                 finally:self.server.project_lock.release()
             elif parsed.path=='/api/import':
-                name=query.get('name',['photo.jpg'])[0];relative=query.get('relative',[name])[0];self.send(200,self.store.import_file(name,relative,self.read_body()))
+                name=query.get('name',['photo.jpg'])[0];relative=query.get('relative',[name])[0]
+                layout=query.get('layout',['full'])[0]
+                self.send(200,self.store.import_file(name,relative,self.read_body(),layout=layout))
             elif parsed.path=='/api/items/remove':
                 self.send(200,self.store.remove_items(self.json_body().get('ids')))
             elif parsed.path.startswith('/api/item/'):

@@ -6,6 +6,12 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const imageUrl=(id,kind='original')=>`/api/image/${id}/${kind}?token=${encodeURIComponent(token)}`;
 function notify(message){$('toast').textContent=message;$('toast').hidden=false;clearTimeout(notify.timer);notify.timer=setTimeout(()=>$('toast').hidden=true,4500);}
 async function api(path,body,raw=false){const opt={headers:{'X-Film-Token':token}};if(state.project.project_id)opt.headers['X-Film-Project']=state.project.project_id;if(body!==undefined){opt.method='POST';opt.body=raw?body:JSON.stringify(body);opt.headers['Content-Type']=raw?'application/octet-stream':'application/json';}const response=await fetch(path,opt);const result=await response.json();if(!response.ok)throw Error(result.error||'操作未完成。');return result;}
+const importLayout=()=>$('importLayout').value||'full';
+function frameLabel(row){
+ if(!row.frame)return '';
+ const positions=row.layout==='half-tb'?['上格','下格']:['左格','右格'];
+ return `半格 ${row.frame}（${positions[row.frame==='A'?0:1]}）`;
+}
 function item(){return state.project.items.find(r=>r.id===current);}
 function needsReview(r){return !r.confirmed&&!r.auto_pass&&r.review_decision!=='abstention_appropriate';}
 function filtered(){const f=$('filter').value;return state.project.items.filter(r=>f==='all'||f==='confirmed'&&r.confirmed||f==='review'&&needsReview(r)||f==='rejected'&&['rejected','missing','error'].includes(r.status)||r.confidence===f);}
@@ -19,7 +25,7 @@ function render(){
  const items=state.project.items;const validIds=new Set(items.map(r=>r.id));selected.forEach(id=>{if(!validIds.has(id))selected.delete(id);});if(current&&!validIds.has(current)){current=filtered()[0]?.id||null;imageId=null;image=null;lastCropKey='';}
  const removeBlocked=removeBusy||projectBusy||importing||reviewBusy||editing||exportPending||state.jobs.some(j=>['queued','running'].includes(j.status));$('removeSelected').disabled=removeBlocked||!selected.size;$('removeCurrent').disabled=removeBlocked||!item();$('projectPath').textContent=state.storage?.project_root||'';$('projectPath').title=state.storage?.project_root||'目前專案保存位置';$('count').textContent=items.length;if(document.activeElement!==$('projectName'))$('projectName').value=state.project.name;
  $('stats').innerHTML=`<div class="stat"><strong>${items.filter(r=>r.confidence==='high').length}</strong><span>高信心</span></div><div class="stat"><strong>${items.filter(needsReview).length}</strong><span>待檢查</span></div><div class="stat"><strong>${items.filter(r=>r.confirmed).length}</strong><span>人工已確認</span></div>`;
- const list=filtered();const nextListHTML=list.length?list.map(r=>`<div class="photo-card ${r.id===current?'active':''}" data-id="${r.id}" role="button" tabindex="0" aria-label="${esc(r.name)}"><input type="checkbox" aria-label="選取 ${esc(r.name)}" data-select="${r.id}" ${selected.has(r.id)?'checked':''}><img src="${imageUrl(r.id)}" alt="" loading="lazy"><div class="photo-text"><strong title="${esc(r.name)}">${esc(r.name)}</strong><span class="badge ${r.confirmed?'confirmed':r.confidence}">${r.confirmed?'✓ 人工已確認':labels[r.confidence]||'處理中'}</span><div class="detail">${r.width} × ${r.height} · ${r.bit_depth}-bit${r.status==='detecting'?' · 辨識中':''}</div></div></div>`).join(''):'<p class="hint" style="padding:15px">沒有符合篩選條件的照片。</p>';if(nextListHTML!==lastListHTML){$('photoList').innerHTML=nextListHTML;lastListHTML=nextListHTML;}
+ const list=filtered();const nextListHTML=list.length?list.map(r=>`<div class="photo-card ${r.id===current?'active':''}" data-id="${r.id}" role="button" tabindex="0" aria-label="${esc(r.name)}"><input type="checkbox" aria-label="選取 ${esc(r.name)}" data-select="${r.id}" ${selected.has(r.id)?'checked':''}><img src="${imageUrl(r.id)}" alt="" loading="lazy"><div class="photo-text"><strong title="${esc(r.name)}">${esc(r.name)}</strong><span class="badge ${r.confirmed?'confirmed':r.confidence}">${r.confirmed?'✓ 人工已確認':labels[r.confidence]||'處理中'}</span><div class="detail">${r.frame?frameLabel(r):r.width+' × '+r.height} · ${r.bit_depth}-bit${r.status==='detecting'?' · 辨識中':''}</div></div></div>`).join(''):'<p class="hint" style="padding:15px">沒有符合篩選條件的照片。</p>';if(nextListHTML!==lastListHTML){$('photoList').innerHTML=nextListHTML;lastListHTML=nextListHTML;}
  $('selectedCount').textContent=selected.size?`已選取 ${selected.size} 張`:'未選取照片';$('exportCount').textContent=`${eligible().length} 張可輸出${selected.size?'（選取範圍）':''}`;$('export').disabled=!eligible().length;
  const settings=state.project.settings||{};for(const [id,k]of[['format','format'],['bitDepth','bit_depth'],['quality','quality']])if(document.activeElement!==$(id)&&settings[k]!==undefined)$(id).value=settings[k];
  renderEditor();renderJobs();
@@ -27,13 +33,13 @@ function render(){
 function renderEditor(){
  const r=item();$('empty').hidden=!!r;$('editor').hidden=!r;
  if(!r){const hasPhotos=state.project.items.length>0;$('emptyTitle').textContent=hasPhotos?'這個篩選已沒有待處理照片':'從一卷底片開始';$('emptyMessage').textContent=state.jobs.some(j=>j.kind==='import'&&j.status!=='completed')?'正在從選定的資料夾匯入照片，辨識會在背景繼續。':hasPhotos?'可切換為全部照片，繼續查看已確認或拒絕的結果。':'匯入照片或資料夾，開始檢查候選邊界。';$('emptyImport').hidden=hasPhotos;return;}
- $('photoName').textContent=r.name;$('photoInfo').textContent=`${r.width} × ${r.height} px · ${r.bit_depth}-bit · ${r.channels===1?'灰階':'彩色通道'}${r.metadata?.icc?' · ICC':''}${r.metadata?.dpi?' · '+r.metadata.dpi.map(x=>Math.round(x)).join(' × ')+' DPI':''}`;
+ $('photoName').textContent=r.name;$('photoInfo').textContent=`${r.frame?frameLabel(r)+' · ':''}${r.width} × ${r.height} px · ${r.bit_depth}-bit · ${r.channels===1?'灰階':'彩色通道'}${r.metadata?.icc?' · ICC':''}${r.metadata?.dpi?' · '+r.metadata.dpi.map(x=>Math.round(x)).join(' × ')+' DPI':''}`;
  const list=filtered();$('position').textContent=`${Math.max(0,list.findIndex(x=>x.id===r.id)+1)} / ${list.length}`;
  $('confidence').className=`badge ${r.confidence}`;$('confidence').textContent=labels[r.confidence]||'處理中';$('reviewState').textContent=r.confirmed?'✓ 人工已確認':r.review_decision==='abstention_appropriate'?'✓ 已保留拒絕':r.auto_pass?'通過自動門檻':'等待你確認';
  if(!editing){for(const [id,key]of[['inset','inset'],['insetUnit','inset_unit'],['rotation','rotation_deg']])if(document.activeElement!==$(id))$(id).value=r[key]??0;$('perspective').checked=r.mode==='perspective';}
  $('manualFrame').hidden=!!r.corners;$('reject').disabled=reviewBusy||removeBusy;$('accept').disabled=reviewBusy||removeBusy||!r.corners||['detecting','queued','missing'].includes(r.status);$('reset').disabled=!r.detection;
  $('accept').textContent=r.confirmed?'✓ 已確認，下一張':'✓ 確認這張邊界　Enter';
- $('imageMessage').textContent=r.status==='missing'?'來源照片遺失或校驗不符，請恢復 Originals 中的原檔。':r.status==='detecting'||r.status==='queued'?'正在分析照片，請稍候…':!r.corners?'這張邊界不夠清楚。可以保留拒絕，或建立手動框。':r.confirmed?'這個邊界已確認。修改角點或參數後，需要重新確認。':r.auto_pass?'候選框通過自動門檻；你仍可調整、人工確認。':'請檢查四邊，避免殘留片邊或裁入畫面。';
+ $('imageMessage').textContent=r.status==='missing'?'來源照片遺失或校驗不符，請恢復 Originals 中的原檔。':r.status==='detecting'||r.status==='queued'?'正在分析照片，請稍候…':!r.corners?(r.frame?(r.error||'這一格邊界不夠清楚，請建立手動框或保留拒絕。'):'這張邊界不夠清楚。可以保留拒絕，或建立手動框。'):r.confirmed?'這個邊界已確認。修改角點或參數後，需要重新確認。':r.auto_pass?'候選框通過自動門檻；你仍可調整、人工確認。':'請檢查四邊，避免殘留片邊或裁入畫面。';
  if(imageId!==r.id){imageId=r.id;image=null;zoom=1;pan={x:0,y:0};const im=new Image();const expected=r.id;im.onload=()=>{if(current===expected){image=im;draw();}};im.src=imageUrl(r.id);}
  draw();if(compare)loadCrop();
 }
@@ -69,7 +75,14 @@ $('removeCurrent').onclick=()=>removePhotos(current?[current]:[]);
 $('prevPhoto').onclick=()=>navigate(-1);$('nextPhoto').onclick=()=>navigate(1);
 for(const [id,key]of[['inset','inset'],['rotation','rotation_deg']])$(id).onchange=()=>saveEdit({[key]:Number($(id).value)});
 $('insetUnit').onchange=()=>saveEdit({inset_unit:$('insetUnit').value});$('perspective').onchange=()=>saveEdit({mode:$('perspective').checked?'perspective':'rotate'});
-$('reset').onclick=()=>saveEdit({reset:true});$('manualFrame').onclick=()=>{const r=item(),w=r.width,h=r.height;saveEdit({corners:[[w*.03,h*.03],[w*.97,h*.03],[w*.97,h*.97],[w*.03,h*.97]]});};
+$('reset').onclick=()=>saveEdit({reset:true});$('manualFrame').onclick=()=>{
+ const r=item();if(!r)return;
+ let left=.03,right=.97,top=.03,bottom=.97;
+ if(r.layout==='half-lr'){if(r.frame==='A')right=.47;else left=.53;}
+ if(r.layout==='half-tb'){if(r.frame==='A')bottom=.47;else top=.53;}
+ saveEdit({corners:[[r.width*left,r.height*top],[r.width*right,r.height*top],
+                    [r.width*right,r.height*bottom],[r.width*left,r.height*bottom]]});
+};
 function advanceReviewed(id,before,message){
  if(current!==id){notify(message);return;}
  const visible=filtered(),allowed=new Set(visible.map(r=>r.id));const next=before.slice(before.indexOf(id)+1).find(x=>allowed.has(x));
@@ -91,7 +104,7 @@ function setCompare(){compare=!compare;$('compare').setAttribute('aria-pressed',
 $('compare').onclick=setCompare;
 async function loadCrop(){const r=item();if(!r||!compare)return;if(!r.corners){$('cropImage').hidden=true;$('cropMessage').textContent='先建立裁切框，再查看預覽。';return;}const key=r.id+JSON.stringify([r.corners,r.inset,r.inset_unit,r.rotation_deg,r.mode]);if(lastCropKey===key)return;lastCropKey=key;$('cropMessage').textContent='正在產生預覽…';const id=r.id;try{const response=await fetch(imageUrl(id,'crop')+'&rev='+Date.now());if(!response.ok){const message=await response.json();throw Error(message.error);}const blob=await response.blob();if(current!==id||lastCropKey!==key)return;const previous=$('cropImage').dataset.blob;const url=URL.createObjectURL(blob);$('cropImage').src=url;$('cropImage').dataset.blob=url;$('cropImage').hidden=false;$('cropMessage').textContent='';if(previous)URL.revokeObjectURL(previous);}catch(e){$('cropMessage').textContent=e.message;$('cropImage').hidden=true;}}
 new ResizeObserver(()=>requestAnimationFrame(draw)).observe($('canvasWrap'));
-async function importFiles(files){if(importing||projectBusy||removeBusy){notify('請先完成目前匯入或專案選擇。');return;}const photos=Array.from(files).filter(f=>/\.(jpe?g|png|tiff?)$/i.test(f.name));if(!photos.length){notify('沒有找到支援的照片。');return;}importing=true;let errors=[],duplicates=0;for(let i=0;i<photos.length;i++){const file=photos[i];$('importProgress').textContent=`匯入 ${i+1} / ${photos.length} · ${file.name}`;try{const r=await api('/api/import?name='+encodeURIComponent(file.name)+'&relative='+encodeURIComponent(file.webkitRelativePath||file.name),file,true);if(r.duplicate)duplicates++;if(!current)current=r.item.id;}catch(e){errors.push(file.name+'：'+e.message);}await refresh(true);}importing=false;$('importProgress').textContent=`匯入完成${duplicates?' · '+duplicates+' 張重複照片已略過':''}${errors.length?' · '+errors.length+' 張失敗':''}`;if(errors.length)notify(errors.join('；'));else notify('照片已匯入，辨識在背景繼續。');$('files').value='';$('folder').value='';}
+async function importFiles(files){if(importing||projectBusy||removeBusy){notify('請先完成目前匯入或專案選擇。');return;}const photos=Array.from(files).filter(f=>/\.(jpe?g|png|tiff?)$/i.test(f.name));if(!photos.length){notify('沒有找到支援的照片。');return;}const layout=importLayout();importing=true;let errors=[],duplicates=0;for(let i=0;i<photos.length;i++){const file=photos[i];$('importProgress').textContent=`匯入 ${i+1} / ${photos.length} · ${file.name}`;try{const r=await api('/api/import?name='+encodeURIComponent(file.name)+'&relative='+encodeURIComponent(file.webkitRelativePath||file.name)+'&layout='+encodeURIComponent(layout),file,true);if(r.duplicate)duplicates++;if(!current)current=r.item.id;}catch(e){errors.push(file.name+'：'+e.message);}await refresh(true);}importing=false;$('importProgress').textContent=`匯入完成${duplicates?' · '+duplicates+' 張重複照片已略過':''}${errors.length?' · '+errors.length+' 張失敗':''}`;if(errors.length)notify(errors.join('；'));else notify('照片已匯入，辨識在背景繼續。');$('files').value='';$('folder').value='';}
 $('addFiles').onclick=$('emptyImport').onclick=()=>$('files').click();$('addFolder').onclick=()=>$('folder').click();$('files').onchange=e=>importFiles(e.target.files);$('folder').onchange=e=>importFiles(e.target.files);
 document.addEventListener('dragover',e=>e.preventDefault());document.addEventListener('drop',e=>{e.preventDefault();if(e.dataTransfer.files.length)importFiles(e.dataTransfer.files);});
 async function projectAction(kind){
@@ -100,7 +113,7 @@ async function projectAction(kind){
  await saveChain;projectBusy=true;$('openProject').disabled=true;$('newProject').disabled=true;
  try{
   notify(kind==='open'?'請在 Windows 視窗選擇專案資料夾。':'先選來源照片資料夾，再選新專案保存位置與名稱。');
-  const result=await api(kind==='open'?'/api/project/open':'/api/project/new-from-folder',{});
+  const result=await api(kind==='open'?'/api/project/open':'/api/project/new-from-folder',kind==='new'?{layout:importLayout()}:{});
   if(result.cancelled){notify('已取消，保留目前專案。');return;}
   selected.clear();current=null;imageId=null;image=null;lastListHTML='';lastCropKey='';compare=false;$('compare').setAttribute('aria-pressed','false');$('cropPane').hidden=true;$('viewLayout').classList.toggle('comparing',false);
   await refresh(true);notify(result.unchanged?'目前已開啟這個專案。':kind==='open'?'專案已開啟，編輯與確認狀態已恢復。':'新專案已建立，照片正在背景匯入。');

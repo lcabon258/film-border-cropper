@@ -20,7 +20,7 @@ jobs:
     permissions:
       contents: write
     env:
-      RELEASE_TAG: v1.0-preview.4
+      RELEASE_TAG: v1.0-preview.5
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
@@ -38,7 +38,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
       - name: Test application and removal safety
         run: |
-          python -m unittest test_app test_routes test_projects test_removal -v
+          python -m unittest test_app test_routes test_projects test_removal test_half_frame -v
           if ($LASTEXITCODE -ne 0) { throw 'Backend tests failed.' }
           node test_frontend.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Frontend logic checks failed.' }
@@ -48,8 +48,8 @@ jobs:
         run: |
           & ./_internal/runtime/python.exe -I -c "import cv2,numpy,PIL; import server; print('Isolated runtime and app imports OK')"
           if ($LASTEXITCODE -ne 0) { throw 'Portable runtime import failed.' }
-          & ./_internal/runtime/python.exe -I test_removal.py -v
-          if ($LASTEXITCODE -ne 0) { throw 'Portable removal checks failed.' }
+          & ./_internal/runtime/python.exe -I test_half_frame.py -v
+          if ($LASTEXITCODE -ne 0) { throw 'Portable half-frame checks failed.' }
       - name: Package downloadable files
         shell: python
         run: |
@@ -64,20 +64,19 @@ jobs:
           files = [root/name for name in names] + app
           assert (root/'FilmBorderCropper.exe').stat().st_size > 0
           assert (root/'_internal/runtime/pythonw.exe').is_file()
-          manifest = {'version':os.environ['RELEASE_TAG'], 'source_commit':os.environ['GITHUB_SHA'], 'backend_checks':28, 'frontend_logic_checks':29, 'portable_removal_checks':8, 'browser_ui_tested':False}
+          manifest = {'version':os.environ['RELEASE_TAG'], 'source_commit':os.environ['GITHUB_SHA'], 'backend_checks':31, 'frontend_logic_checks':29, 'portable_half_frame_checks':3, 'browser_ui_tested':False}
           (dist/'RELEASE_BUILD.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
-          guide = '''Film Border Cropper V1 Preview 4 - Windows x64
+          guide = '''Film Border Cropper V1 Preview 5 - Windows x64
           完整版：完整解壓縮 portable.zip，再雙擊 FilmBorderCropper.exe；不需另外安裝 Python。
           更新版：先在舊程式按「關閉程式」，將 update.zip 的內容覆蓋到舊程式資料夾。
           更新包不含 Projects、照片、個人設定或 runtime；請保留這些既有資料。
-          從專案移除：單張按「從專案移除這張」；多張先勾選縮圖再按移除選取照片。
-          移除內容備份在專案 Removed 資料夾，匯入來源及既有輸出不變。
-          目前尚無介面內還原按鈕。新介面仍需使用者在 Windows 實際試用。
+          匯入前選「半格・左右各一張」或「半格・上下各一張」。A、B 兩格各自確認後分開輸出。
+          找不到清楚邊界時可建立手動框或保留拒絕。
           '''
           (dist/'使用說明.txt').write_text(guide,encoding='utf-8-sig')
           assets = []
           for kind, members in [('portable', files+runtime), ('update', files)]:
-              archive = dist/f'FilmBorderCropper_V1_preview4_{kind}.zip'
+              archive = dist/f'FilmBorderCropper_V1_preview5_{kind}.zip'
               with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as z:
                   for p in members:
                       rel = p.relative_to(root)
@@ -89,13 +88,13 @@ jobs:
                   assert z.testzip() is None
               assets.append(archive)
           (dist/'SHA256SUMS.txt').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in assets),encoding='ascii')
-          notes = '''Windows x64 測試版。首次使用請下載 **FilmBorderCropper_V1_preview4_portable.zip**，完整解壓縮後雙擊 **FilmBorderCropper.exe**，不需另外安裝 Python。
+          notes = '''Windows x64 測試版。首次使用請下載 **FilmBorderCropper_V1_preview5_portable.zip**，完整解壓縮後雙擊 **FilmBorderCropper.exe**，不需另外安裝 Python。
 
-          已有 Preview 3：先關閉程式，使用 **FilmBorderCropper_V1_preview4_update.zip** 覆蓋程式檔案，保留原有專案和照片資料。
+          已有 Preview 4：先關閉程式，使用 **FilmBorderCropper_V1_preview5_update.zip** 覆蓋程式檔案，保留原有專案和照片資料。
 
-          本版加入單張與多選「從專案移除」。移除的專案副本、預覽及紀錄備份於 Removed；匯入來源和既有輸出保持不變，目前尚無介面內還原按鈕。
+          本版支援在同一張掃描檔中辨識左右或上下兩格。A、B 兩格可各自手動微調、確認與輸出。
 
-          本次附件由 GitHub Windows runner 從下列提交重新建置，並非先前對話附件的逐位元複本。已通過 28 項後端測試、29 項前端邏輯檢查及 8 項獨立 runtime 移除檢查。前端採模擬 DOM；尚未完成新介面的實際 Windows 瀏覽器操作驗證。辨識核心未改動，信心分數仍是未校準的啟發式分數。
+          GitHub Windows 建置已通過專案、裁切、前端操作及可攜環境的半格測試。前端測試使用模擬 DOM。
 
           **Source code** 為原始碼封存，測試執行檔請下載上方 portable.zip。校驗碼見 SHA256SUMS.txt。
           '''
@@ -105,5 +104,5 @@ jobs:
         run: |
           gh release view "$env:RELEASE_TAG" --repo "$env:GH_REPO" *> $null
           if ($LASTEXITCODE -eq 0) { throw 'Release already exists; refusing to replace published assets.' }
-          gh release create "$env:RELEASE_TAG" dist/FilmBorderCropper_V1_preview4_portable.zip dist/FilmBorderCropper_V1_preview4_update.zip dist/SHA256SUMS.txt --repo "$env:GH_REPO" --target "$env:GITHUB_SHA" --prerelease --title 'Film Border Cropper V1 Preview 4 - Windows x64' --notes-file dist/RELEASE_NOTES.md
+          gh release create "$env:RELEASE_TAG" dist/FilmBorderCropper_V1_preview5_portable.zip dist/FilmBorderCropper_V1_preview5_update.zip dist/SHA256SUMS.txt --repo "$env:GH_REPO" --target "$env:GITHUB_SHA" --prerelease --title 'Film Border Cropper V1 Preview 5 - Windows x64' --notes-file dist/RELEASE_NOTES.md
           if ($LASTEXITCODE -ne 0) { throw 'Release publication failed.' }
